@@ -1,0 +1,13 @@
+fastapi>=0.104.0
+uvicorn>=0.23.2
+python-multipart
+pydantic>=2.4.2
+celery>=5.3.4
+redis>=5.0.1
+psutil>=5.9.0
+# Frame extraction dependencies
+opencv-python>=4.8.0
+numpy>=1.24.0
+tqdm>=4.66.0
+# Image processing
+pillow>=10.0.0 
