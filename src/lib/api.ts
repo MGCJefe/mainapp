@@ -59,6 +59,12 @@ export interface FrameMetadata {
   file_path?: string;
 }
 
+export interface FramesListResponse {
+  video_id: string;
+  frames_count: number;
+  frames: FrameMetadata[];
+}
+
 /**
  * Generic fetch wrapper with error handling
  */
@@ -221,8 +227,8 @@ export async function getFrameExtractionStatus(
  */
 export async function getExtractedFrames(
   videoId: string
-): Promise<ApiResponse<FrameMetadata[]>> {
-  return fetchApi<FrameMetadata[]>(`/frames/${videoId}`);
+): Promise<ApiResponse<FramesListResponse>> {
+  return fetchApi<FramesListResponse>(`/frames/${videoId}`);
 }
 
 /**
@@ -257,6 +263,25 @@ export async function debugVideoId(videoId: string): Promise<ApiResponse<any>> {
   return fetchApi<any>(`/frames/debug/${videoId}`);
 }
 
+// Debug function to check metadata for a video_id
+export const debugVideoMetadata = async (videoId: string) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/frames/debug/${videoId}`);
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Debug API error:', errorText);
+      return { error: `API error: ${response.status}`, data: null };
+    }
+    
+    const data = await response.json();
+    return { error: null, data };
+  } catch (error) {
+    console.error('Error checking video metadata:', error);
+    return { error: String(error), data: null };
+  }
+};
+
 export default {
   checkApiHealth,
   uploadVideo,
@@ -267,4 +292,5 @@ export default {
   selectFrame,
   unselectFrame,
   debugVideoId,
+  debugVideoMetadata,
 }; 

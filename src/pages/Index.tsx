@@ -205,27 +205,63 @@ const Index = () => {
       try {
         const response = await getExtractedFrames(videoData.id);
         
+        console.log("=== Frame Extraction Debug ===");
+        console.log("Video ID:", videoData.id);
+        console.log("Raw API Response:", response);
+        console.log("Response.data contents:", JSON.stringify(response.data, null, 2));
+        
         if (response.error) {
+          console.error("API Error:", response.error);
           toast({
             title: "Error fetching frames",
             description: response.error,
             variant: "destructive",
           });
         } else if (response.data) {
-          const frames = response.data;
-          console.log("Received frames data:", frames);
+          // The API returns { video_id, frames_count, frames }
+          const framesData = response.data.frames;
+          
+          console.log("Response data structure:", {
+            responseType: typeof response.data,
+            dataKeys: Object.keys(response.data),
+            framesCount: response.data.frames_count,
+            framesArrayLength: framesData?.length,
+            firstFrame: framesData?.[0]
+          });
+          
+          // Safely handle frames data
+          const frames = Array.isArray(framesData) ? framesData : [];
+          if (frames.length === 0) {
+            console.log("No frames received from API");
+            toast({
+              title: "No frames found",
+              description: "The video processing completed but no frames were returned.",
+              variant: "destructive",
+            });
+            return;
+          }
           
           // Convert API frame data to result format
           const frameFiles = frames.map(frame => {
-            console.log(`Frame ${frame.frame_id} URLs:`, {
-              file_url: frame.file_url,
-              thumbnail_url: frame.thumbnail_url
+            if (!frame) {
+              console.warn("Received null or undefined frame");
+              return null;
+            }
+            
+            console.log("Processing frame:", {
+              id: frame.frame_id,
+              paths: {
+                file_path: frame.file_path,
+                file_url: frame.file_url,
+                thumbnail_path: frame.thumbnail_path,
+                thumbnail_url: frame.thumbnail_url
+              }
             });
             
-            return {
+            const resultItem = {
               id: frame.frame_id,
               name: frame.filename || `frame_${frame.frame_id}.jpg`,
-              url: frame.file_url || frame.full_image_url,
+              url: frame.file_url || frame.file_path,
               previewUrl: frame.thumbnail_url || frame.thumbnail_path,
               metadata: {
                 timestamp: frame.timestamp,
@@ -236,13 +272,47 @@ const Index = () => {
                 selected: frame.selected
               }
             };
+            
+            return resultItem;
+          }).filter(Boolean); // Remove any null items
+          
+          if (frameFiles.length === 0) {
+            console.warn("No valid frames after processing");
+            toast({
+              title: "Processing Error",
+              description: "Could not process any frames from the response.",
+              variant: "destructive",
+            });
+            return;
+          }
+          
+          console.log("Final processed frames:", {
+            count: frameFiles.length,
+            firstFrame: frameFiles[0]
+          });
+          
+          // CRITICAL FIX: Use the actual video_id from the API response instead of hardcoded "frames-result"
+          // This was causing the 500 error when trying to update frame selection
+          const videoId = response.data.video_id || videoData.id;
+          
+          console.log("🔍 IMPORTANT - Setting video_id for frames:", {
+            apiResponseVideoId: response.data.video_id,
+            videoDataId: videoData.id,
+            finalVideoId: videoId,
+            previousHardcodedId: "frames-result" // This was the problem!
           });
           
           newResults.push({
-            id: "frames-result",
+            id: videoId, // Use the correct video_id here instead of hardcoded "frames-result"
             type: "frames",
             title: `Extracted Key Frames (${frameExtractionConfig.fps} FPS)`,
-            files: frameFiles
+            files: frameFiles.map(file => ({
+              ...file,
+              metadata: {
+                ...file.metadata,
+                video_id: videoId // Ensure video_id is set in metadata too
+              }
+            }))
           });
         }
       } catch (error) {

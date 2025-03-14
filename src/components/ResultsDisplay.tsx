@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { ImageGallery } from "@/components/ui/image-gallery";
 import {
   Collapsible,
   CollapsibleContent,
@@ -26,11 +27,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
-import { selectFrame, unselectFrame } from "@/lib/api";
+import { selectFrame, unselectFrame, debugVideoMetadata } from "@/lib/api";
 import { useToast } from "@/components/ui/use-toast";
+import LazyImage from "./LazyImage";
+import { downloadFile, downloadMultipleFiles } from "@/lib/utils";
 
 export type ResultItem = {
-  id: string;
+  id: string;  // This is the video_id for frame results
   type: "transcript" | "frames" | "description" | "thumbnails" | "emails" | "googleDocsLink";
   title: string;
   content?: string;
@@ -40,6 +43,7 @@ export type ResultItem = {
     url: string;
     previewUrl?: string;
     metadata?: {
+      video_id?: string;
       timestamp?: number;
       qualityScore?: number;
       sharpness?: number;
@@ -92,6 +96,28 @@ const ResultsDisplay = ({ results }: ResultsDisplayProps) => {
     setSelectedFrames(newSelectedFrames);
   }, [results]);
 
+  // Debug logging for results and video_ids
+  useEffect(() => {
+    results.forEach(result => {
+      if (result.type === "frames" || result.type === "thumbnails") {
+        console.log('ResultsDisplay - Processing result:', {
+          resultId: result.id,
+          resultType: result.type,
+          filesCount: result.files?.length || 0
+        });
+        
+        result.files?.forEach(file => {
+          console.log('ResultsDisplay - File metadata:', {
+            fileId: file.id,
+            fileName: file.name,
+            originalVideoId: file.metadata?.video_id,
+            assignedVideoId: result.id
+          });
+        });
+      }
+    });
+  }, [results]);
+
   const getIcon = (type: ResultItem["type"]) => {
     switch (type) {
       case "transcript":
@@ -115,31 +141,106 @@ const ResultsDisplay = ({ results }: ResultsDisplayProps) => {
     }));
   };
 
-  const toggleFrameSelection = async (frameId: string, isSelected: boolean) => {
-    if (!frameId) {
-      console.error("No frame ID provided for selection toggle");
+  const toggleFrameSelection = async (frameId: string, videoId: string, isSelected: boolean) => {
+    if (!frameId || !videoId) {
+      console.error("Missing frame ID or video ID for selection toggle", { frameId, videoId });
       return;
     }
-    
+
+    // Enhanced debug logging
+    console.log('🔍 Toggle frame selection - BEFORE API CALL:', { 
+      frameId, 
+      videoId, 
+      isSelected,
+      endpoint: isSelected ? '/api/frames/unselect' : '/api/frames/select',
+      requestBody: JSON.stringify({
+        video_id: videoId,
+        frame_ids: [frameId]
+      }, null, 2)
+    });
+
     setIsSelecting(true);
     
     try {
-      const response = isSelected 
-        ? await unselectFrame(frameId)
-        : await selectFrame(frameId);
+      const endpoint = isSelected ? '/api/frames/unselect' : '/api/frames/select';
       
-      if (response.error) {
-        toast({
-          title: `Failed to ${isSelected ? 'unselect' : 'select'} frame`,
-          description: response.error,
-          variant: "destructive",
-        });
-      } else {
-        setSelectedFrames(prev => ({
-          ...prev,
-          [frameId]: !isSelected
-        }));
+      // Log the exact request being made
+      const requestBody = {
+        video_id: videoId,
+        frame_ids: [frameId]
+      };
+      
+      console.log('📤 API Request:', {
+        url: `http://localhost:8000${endpoint}`,
+        method: 'POST',
+        body: requestBody
+      });
+      
+      const response = await fetch(`http://localhost:8000${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestBody)
+      });
+
+      // Log response status
+      console.log('📥 API Response Status:', {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('❌ Server error response:', errorText);
+        
+        // Try to parse the error as JSON for more details
+        try {
+          const errorData = JSON.parse(errorText);
+          console.error('❌ Parsed error data:', errorData);
+          
+          // Check if there's any information about the video_id in the error
+          if (errorData.detail && typeof errorData.detail === 'string' && 
+              errorData.detail.includes('video_id')) {
+            console.error('❌ Possible video_id issue in error message:', {
+              providedVideoId: videoId,
+              errorMessage: errorData.detail
+            });
+          }
+          
+          const errorMessage = errorData.detail || errorData.message || `Error: ${response.status}`;
+          toast({
+            title: `Failed to ${isSelected ? 'unselect' : 'select'} frame`,
+            description: errorMessage,
+            variant: "destructive",
+          });
+        } catch (e) {
+          console.error('❌ Could not parse error response as JSON:', e);
+          toast({
+            title: `Failed to ${isSelected ? 'unselect' : 'select'} frame`,
+            description: `Server error: ${response.status}`,
+            variant: "destructive",
+          });
+        }
+        return;
       }
+
+      setSelectedFrames(prev => ({
+        ...prev,
+        [frameId]: isSelected
+      }));
+
+      // Add debug log to confirm the state update
+      console.log('✅ Updated selectedFrames state:', {
+        frameId,
+        newSelectionState: isSelected,
+        updatedState: {
+          ...selectedFrames,
+          [frameId]: isSelected
+        }
+      });
+
     } catch (error) {
       console.error("Error toggling frame selection:", error);
       toast({
@@ -176,49 +277,92 @@ const ResultsDisplay = ({ results }: ResultsDisplayProps) => {
     return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
   };
 
-  const downloadSelectedFrames = () => {
-    // Find all selected frames
-    const framesToDownload: { url: string, name: string }[] = [];
-    
-    results.forEach(result => {
-      if ((result.type === "frames" || result.type === "thumbnails") && result.files) {
-        result.files.forEach(file => {
-          if (file.id && selectedFrames[file.id] && file.url) {
-            framesToDownload.push({
-              url: file.url,
-              name: file.name
-            });
-          }
+  const downloadSelectedFrames = async (selectedImagesFromGallery?: Array<{ url: string; name: string }>) => {
+    try {
+      // If we received selected images directly from the gallery, use those
+      if (selectedImagesFromGallery && selectedImagesFromGallery.length > 0) {
+        console.log('📦 ResultsDisplay - Using selected images from gallery:', {
+          count: selectedImagesFromGallery.length,
+          images: selectedImagesFromGallery
         });
+        
+        // Use the new utility function to download multiple files
+        await downloadMultipleFiles(selectedImagesFromGallery);
+        
+        toast({
+          title: "Download started",
+          description: `Downloading ${selectedImagesFromGallery.length} frames`,
+        });
+        
+        return;
       }
-    });
-    
-    if (framesToDownload.length === 0) {
+      
+      // Otherwise, use our internal selectedFrames state
+      console.log('🔍 ResultsDisplay - downloadSelectedFrames:', {
+        selectedFramesState: selectedFrames,
+        selectedFramesCount: Object.values(selectedFrames).filter(Boolean).length
+      });
+      
+      // Find all selected frames
+      const framesToDownload: { url: string, name: string }[] = [];
+      
+      results.forEach(result => {
+        if ((result.type === "frames" || result.type === "thumbnails") && result.files) {
+          result.files.forEach(file => {
+            if (file.id && selectedFrames[file.id] && file.url) {
+              console.log('✅ Found selected frame:', {
+                fileId: file.id,
+                fileName: file.name,
+                isSelected: selectedFrames[file.id],
+                url: file.url
+              });
+              
+              // Ensure we're using the full URL if it's a relative path
+              const fullUrl = file.url.startsWith('http') 
+                ? file.url 
+                : `http://localhost:8000${file.url.startsWith('/') ? file.url : `/${file.url}`}`;
+              
+              framesToDownload.push({
+                url: fullUrl,
+                name: file.name
+              });
+            }
+          });
+        }
+      });
+      
+      console.log('📦 ResultsDisplay - Frames to download:', {
+        count: framesToDownload.length,
+        frames: framesToDownload
+      });
+      
+      if (framesToDownload.length === 0) {
+        toast({
+          title: "No frames selected",
+          description: "Please select at least one frame to download",
+          variant: "destructive",
+        });
+        return;
+      }
+      
+      // Use the new utility function to download multiple files
+      await downloadMultipleFiles(framesToDownload);
+      
       toast({
-        title: "No frames selected",
-        description: "Please select at least one frame to download",
+        title: "Download started",
+        description: `Downloading ${framesToDownload.length} frames`,
+      });
+    } catch (error) {
+      console.error('Error downloading selected frames:', error);
+      toast({
+        title: "Download Error",
+        description: `Failed to download frames: ${error instanceof Error ? error.message : 'Unknown error'}`,
         variant: "destructive",
       });
-      return;
     }
-    
-    // For each selected frame, trigger a download
-    framesToDownload.forEach(file => {
-      const link = document.createElement('a');
-      link.href = file.url;
-      link.download = file.name;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    });
-    
-    toast({
-      title: "Download started",
-      description: `Downloading ${framesToDownload.length} frames`,
-    });
   };
 
-  const downloadAllFiles = (files: { name: string, url: string }[]) => {
+  const downloadAllFiles = async (files: { name: string, url: string }[]) => {
     if (!files || files.length === 0) {
       toast({
         title: "No files to download",
@@ -228,32 +372,67 @@ const ResultsDisplay = ({ results }: ResultsDisplayProps) => {
       return;
     }
     
-    // For multiple files, create a zip file
-    if (files.length > 1) {
-      // For now, just download them individually
-      files.forEach(file => {
-        const link = document.createElement('a');
-        link.href = file.url;
-        link.download = file.name;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+    try {
+      // Prepare files with full URLs
+      const filesToDownload = files.map(file => {
+        // Ensure we're using the full URL if it's a relative path
+        const fullUrl = file.url.startsWith('http') 
+          ? file.url 
+          : `http://localhost:8000${file.url.startsWith('/') ? file.url : `/${file.url}`}`;
+        
+        return {
+          url: fullUrl,
+          name: file.name
+        };
       });
-    } else {
-      // For a single file, download directly
-      const file = files[0];
-      const link = document.createElement('a');
-      link.href = file.url;
-      link.download = file.name;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+      
+      // Use the new utility function to download multiple files
+      await downloadMultipleFiles(filesToDownload);
+      
+      toast({
+        title: "Download started",
+        description: `Downloading ${files.length} file(s)`,
+      });
+    } catch (error) {
+      console.error('Error downloading files:', error);
+      toast({
+        title: "Download Error",
+        description: `Failed to download files: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        variant: "destructive",
+      });
     }
+  };
+
+  // Debug function to check metadata for a result
+  const debugResultMetadata = async (resultId: string) => {
+    console.log('Debugging metadata for result:', resultId);
     
-    toast({
-      title: "Download started",
-      description: `Downloading ${files.length} file(s)`,
-    });
+    try {
+      const response = await debugVideoMetadata(resultId);
+      
+      console.log('Debug metadata response:', response);
+      
+      if (response.error) {
+        toast({
+          title: "Debug Error",
+          description: response.error,
+          variant: "destructive",
+        });
+        return;
+      }
+      
+      toast({
+        title: "Debug Info",
+        description: `Metadata check complete. See console for details.`,
+      });
+    } catch (error) {
+      console.error('Error in debug function:', error);
+      toast({
+        title: "Debug Error",
+        description: String(error),
+        variant: "destructive",
+      });
+    }
   };
 
   return (
@@ -280,13 +459,26 @@ const ResultsDisplay = ({ results }: ResultsDisplayProps) => {
                         variant="outline" 
                         size="sm" 
                         className="h-8 hover-scale"
-                        onClick={(e) => {
+                        onClick={async (e) => {
                           e.stopPropagation();
-                          downloadAllFiles(result.files || []);
+                          await downloadAllFiles(result.files || []);
                         }}
                       >
                         <Download className="h-4 w-4 mr-1" />
                         Download All
+                      </Button>
+                    )}
+                    {(result.type === "frames" || result.type === "thumbnails") && (
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        className="h-8 hover-scale ml-2"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          debugResultMetadata(result.id);
+                        }}
+                      >
+                        Debug Metadata
                       </Button>
                     )}
                     {expandedResults[result.id] ? (
@@ -312,13 +504,6 @@ const ResultsDisplay = ({ results }: ResultsDisplayProps) => {
                     <>
                       {(result.type === "frames" || result.type === "thumbnails") && (
                         <div className="flex justify-between items-center mb-3">
-                          <div className="text-sm text-muted-foreground">
-                            {Object.keys(selectedFrames).length > 0 ? (
-                              <span>{Object.keys(selectedFrames).length} frames selected</span>
-                            ) : (
-                              <span>Click to select frames</span>
-                            )}
-                          </div>
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Button variant="outline" size="sm">
@@ -354,112 +539,82 @@ const ResultsDisplay = ({ results }: ResultsDisplayProps) => {
                         </div>
                       )}
                       
-                      <div className={cn(
-                        "grid gap-3 mt-3",
-                        (result.type === "frames" || result.type === "thumbnails") 
-                          ? "grid-cols-2 sm:grid-cols-3 md:grid-cols-4" 
-                          : "grid-cols-1"
-                      )}>
-                        {sortFiles(result.files).map((file, index) => (
-                          <div 
-                            key={index} 
-                            className={cn(
-                              "relative rounded-lg border transition-all",
-                              (result.type === "frames" || result.type === "thumbnails")
-                                ? "aspect-video subtle-shadow" 
-                                : "p-3",
-                              file.id && selectedFrames[file.id] && "ring-2 ring-primary",
-                              isSelecting ? "cursor-wait" : "hover-scale cursor-pointer"
-                            )}
-                            onClick={() => {
-                              if ((result.type === "frames" || result.type === "thumbnails") && file.id) {
-                                toggleFrameSelection(file.id, !!selectedFrames[file.id]);
-                              }
-                            }}
-                          >
-                            {(result.type === "frames" || result.type === "thumbnails") && file.previewUrl && (
-                              <>
-                                <div className="w-full h-full flex items-center justify-center overflow-hidden rounded-lg">
-                                  <img 
-                                    src={file.previewUrl} 
-                                    alt={file.name}
-                                    className="object-cover w-full h-full rounded-lg"
-                                  />
-                                  <a 
-                                    href={file.url} 
-                                    download={file.name}
-                                    className="absolute inset-0 flex items-center justify-center bg-black/50 text-white opacity-0 hover:opacity-100 transition-opacity rounded-lg"
-                                    onClick={(e) => e.stopPropagation()}
-                                  >
-                                    <Download className="h-5 w-5" />
-                                  </a>
-                                </div>
-                                
-                                {/* Frame metadata */}
-                                {file.metadata && (
-                                  <div className="absolute bottom-0 left-0 right-0 bg-black/70 text-white p-1 text-xs rounded-b-lg">
-                                    <div className="flex justify-between items-center">
-                                      <span>{formatTimestamp(file.metadata.timestamp)}</span>
-                                      {file.metadata.qualityScore !== undefined && (
-                                        <Badge variant="outline" className="bg-primary/20 text-white border-primary/30">
-                                          Q: {file.metadata.qualityScore.toFixed(1)}
-                                        </Badge>
-                                      )}
-                                    </div>
-                                  </div>
-                                )}
-                                
-                                {/* Selection indicator */}
-                                {file.id && selectedFrames[file.id] && (
-                                  <div className="absolute top-2 right-2">
-                                    <div className="bg-primary rounded-full p-1">
-                                      <Check className="h-3 w-3 text-white" />
-                                    </div>
-                                  </div>
-                                )}
-                              </>
-                            )}
-                            
-                            {!(result.type === "frames" || result.type === "thumbnails") && (
+                      {(result.type === "frames" || result.type === "thumbnails") ? (
+                        <>
+                          <ImageGallery
+                            images={sortFiles(result.files).map(file => {
+                              return {
+                                ...file,
+                                metadata: {
+                                  ...file.metadata,
+                                  video_id: result.id
+                                }
+                              };
+                            })}
+                            onSelect={toggleFrameSelection}
+                            onDownload={downloadSelectedFrames}
+                            selectionEnabled={true}
+                          />
+                        </>
+                      ) : (
+                        <div className="grid grid-cols-1 gap-3">
+                          {sortFiles(result.files).map((file, index) => (
+                            <div 
+                              key={file.id || `file-${index}`}
+                              className="relative rounded-lg border p-3 transition-all"
+                            >
                               <div className="flex items-center justify-between">
                                 <span className="text-sm truncate">{file.name}</span>
-                                <a 
-                                  href={file.url} 
-                                  download={file.name}
-                                  className="text-primary hover:text-primary/80 transition-colors"
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8 text-primary hover:text-primary/80 transition-colors"
+                                  onClick={async (e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    
+                                    // Ensure we're using the full URL if it's a relative path
+                                    const fullUrl = file.url.startsWith('http') 
+                                      ? file.url 
+                                      : `http://localhost:8000${file.url.startsWith('/') ? file.url : `/${file.url}`}`;
+                                    
+                                    try {
+                                      await downloadFile(fullUrl, file.name);
+                                      toast({
+                                        title: "Download started",
+                                        description: `Downloading ${file.name}`,
+                                      });
+                                    } catch (error) {
+                                      console.error('Error downloading file:', error);
+                                      toast({
+                                        title: "Download Error",
+                                        description: `Failed to download file: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                                        variant: "destructive",
+                                      });
+                                    }
+                                  }}
                                 >
                                   <Download className="h-4 w-4" />
-                                </a>
+                                </Button>
                               </div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                      
-                      {(result.type === "frames" || result.type === "thumbnails") && 
-                       Object.keys(selectedFrames).length > 0 && (
-                        <div className="mt-4 flex justify-end">
-                          <Button 
-                            size="sm" 
-                            className="hover-scale"
-                            onClick={downloadSelectedFrames}
-                          >
-                            <Download className="h-4 w-4 mr-2" />
-                            Download Selected Frames
-                          </Button>
+                            </div>
+                          ))}
                         </div>
                       )}
                     </>
                   )}
                   
-                  {result.url && (
-                    <div className="mt-3">
-                      <Button variant="outline" className="w-full hover-scale" asChild>
-                        <a href={result.url} target="_blank" rel="noopener noreferrer">
-                          <ExternalLink className="h-4 w-4 mr-2" />
-                          Open in Google Docs
-                        </a>
-                      </Button>
+                  {result.url && result.type === "googleDocsLink" && (
+                    <div className="flex justify-end">
+                      <a 
+                        href={result.url} 
+                        target="_blank" 
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center space-x-2 text-primary hover:text-primary/80 transition-colors"
+                      >
+                        <span>Open in Google Docs</span>
+                        <ExternalLink className="h-4 w-4" />
+                      </a>
                     </div>
                   )}
                 </div>

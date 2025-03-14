@@ -40,6 +40,69 @@ logger = logging.getLogger(__name__)
 # Map of task_ids to task information
 active_tasks = {}
 
+# Debug endpoint to check metadata files
+@router.get("/debug/{video_id}", response_model=Dict)
+async def debug_metadata(video_id: str):
+    """
+    Debug endpoint to check if metadata files exist for a given video_id.
+    
+    Args:
+        video_id: ID of the video to check
+        
+    Returns:
+        Debug information about the metadata files
+    """
+    try:
+        # Get the frame output directory
+        output_dir = get_frame_output_dir(video_id)
+        metadata_path = output_dir / "metadata.json"
+        
+        # Check if the directory exists
+        dir_exists = os.path.isdir(output_dir)
+        
+        # Check if the metadata file exists
+        metadata_exists = os.path.isfile(metadata_path)
+        
+        # Try to load the metadata if it exists
+        metadata_content = None
+        if metadata_exists:
+            try:
+                with open(metadata_path, 'r') as f:
+                    metadata_content = json.load(f)
+            except Exception as e:
+                metadata_content = f"Error reading metadata: {str(e)}"
+        
+        # List all files in the directory
+        files_in_dir = []
+        if dir_exists:
+            files_in_dir = os.listdir(output_dir)
+        
+        # Get the base frames directory
+        base_frames_dir = PathLib(settings.RESULTS_DIR) / settings.FRAME_EXTRACTION.FRAMES_DIR
+        
+        # List all video directories
+        all_video_dirs = []
+        if os.path.isdir(base_frames_dir):
+            all_video_dirs = os.listdir(base_frames_dir)
+        
+        return {
+            "video_id": video_id,
+            "directory_path": str(output_dir),
+            "directory_exists": dir_exists,
+            "metadata_path": str(metadata_path),
+            "metadata_exists": metadata_exists,
+            "files_in_directory": files_in_dir,
+            "frames_base_dir": str(base_frames_dir),
+            "all_video_dirs": all_video_dirs,
+            "metadata_content": metadata_content
+        }
+    except Exception as e:
+        logger.error(f"Error in debug endpoint: {e}")
+        return {
+            "error": str(e),
+            "video_id": video_id
+        }
+
 def convert_path_to_url(request: Request, file_path: str) -> str:
     """
     Convert a file path to a URL that can be accessed by the frontend.
