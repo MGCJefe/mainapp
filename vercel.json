@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/mediakit/:path*", "destination": "https://media-169j8es8i-mgcjefes-projects.vercel.app/:path*" }
+  ]
+} 
